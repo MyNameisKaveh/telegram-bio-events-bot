@@ -1,3 +1,5 @@
 aiohttp
 feedparser
 python-telegram-bot
+beautifulsoup4
+# lxml # اختیاری، اما توصیه می‌شود برای سرعت بیشتر در تجزیه HTML
