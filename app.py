@@ -158,78 +158,85 @@ class RSSTelegramBot:
         return events
 
     def format_event_message(self, event: EventInfo) -> str:
-        """Format event for Telegram with RTL and source linking."""
+        """Format event for Telegram with RTL, source linking, and better structure."""
         RLM = "\u200F"  # Right-to-Left Mark
 
-        # 1. آماده‌سازی عنوان: حذف ایموجی‌های تکراری یا پیشوندها اگر لازم است (فعلا دست نخورده)
-        # عنوان‌های RSS گاهی با ایموجی 🖼 (عکس) یا 🔁 (فوروارد) شروع می‌شوند. فعلا آن‌ها را نگه می‌داریم.
-        # اگر می‌خواهید آن‌ها را حذف کنید، می‌توانید از re.sub در اینجا استفاده کنید.
-        # مثال: display_title = re.sub(r"^[🔁🖼\s]+", "", event.title).strip()
+        # 1. آماده‌سازی عنوان
         display_title = event.title.strip()
+        # اگر می‌خواهید ایموجی‌های خاصی را از ابتدای عنوان حذف کنید، اینجا می‌توانید اضافه کنید
+        # مثال: display_title = re.sub(r"^[🔁🖼⚜️\s]+", "", display_title).strip()
 
-        # 2. آماده‌سازی توضیحات: حذف HTML، حذف خط "Forwarded From"، و محدود کردن طول
+        # 2. آماده‌سازی توضیحات
         raw_description_html = event.description
-        # ابتدا تمام تگ‌های HTML را حذف کنید تا متن خالص به دست آید
-        text_content_from_html = re.sub(r'<[^>]+>', '', raw_description_html).strip()
-
-        # حذف خط "Forwarded From" اگر در ابتدای متن باشد
-        lines = text_content_from_html.split('\n')
-        # بررسی دقیق‌تر برای حذف خطوط مربوط به Forwarded From
-        # این بخش ممکن است نیاز به بهبود داشته باشد اگر فرمت "Forwarded From" متفاوت باشد
-        cleaned_lines = []
-        forwarded_line_found = False
-        if lines and lines[0].lower().startswith("forwarded from "):
-            # اگر خط اول "Forwarded From" بود، آن را و احتمالاً چند خط بعدی مربوط به اطلاعات فوروارد را نادیده بگیر
-            # این یک فرض ساده است؛ شاید نیاز به تحلیل بیشتری داشته باشد
-            # برای مثال، RSSHub گاهی یک <p> کامل برای Forwarded From می‌گذارد.
-            # با حذف تگ‌ها، این خط به ابتدای متن می‌آید.
-            final_description = '\n'.join(lines[1:]).strip()
-        else:
-            final_description = text_content_from_html
         
-        # ممکن است هنوز لینک‌های کانال‌های دیگر یا هشتگ‌ها در انتها باشند که از پیام اصلی هستند
-        # اگر توضیحات خیلی طولانی است، آن را کوتاه کنید
-        final_description = final_description.strip()
-        if len(final_description) > 500: # طول را کمی بیشتر کردم
-            final_description = final_description[:500] + "..."
+        # تلاش اولیه برای حفظ برخی شکستگی‌های خط از HTML قبل از حذف کامل تگ‌ها
+        # این یک روش تقریبی است. برای نتایج بهتر، استفاده از کتابخانه HTML parser توصیه می‌شود.
+        temp_html = raw_description_html.replace('<br/>', '\n').replace('<br />', '\n').replace('<br>', '\n')
+        temp_html = re.sub(r'</p>\s*<p>', '</p>\n<p>', temp_html, flags=re.IGNORECASE) # برای ایجاد فاصله بین پاراگراف‌ها
+        
+        # حذف تمام تگ‌های HTML برای گرفتن متن خالص
+        text_content_from_html = re.sub(r'<[^>]+>', '', temp_html).strip()
+        
+        final_description = text_content_from_html
+
+        # حذف دقیق‌تر خط "Forwarded From" اگر در ابتدای متن باشد
+        # این الگو سعی می‌کند "Forwarded From" و هر چیزی بعد از آن تا انتهای خط اول را پیدا کند
+        match = re.match(r"^\s*Forwarded From[^\n]*(?:\n|$)", final_description, re.IGNORECASE)
+        if match:
+            # حذف بخش پیدا شده (هدر "Forwarded From") و گرفتن بقیه متن
+            final_description = final_description[match.end():].strip()
+
+        # حذف فضاهای خالی اضافی و محدود کردن طول توضیحات
+        final_description = "\n".join([line.strip() for line in final_description.splitlines() if line.strip()]) # حذف خطوط خالی و strip کردن هر خط
+        
+        DESCRIPTION_MAX_LEN = 1000  # افزایش محدودیت طول توضیحات
+        if len(final_description) > DESCRIPTION_MAX_LEN:
+            final_description = final_description[:DESCRIPTION_MAX_LEN] + "..."
         elif not final_description: # اگر توضیحات پس از پاکسازی خالی شد
             final_description = ""
 
 
-        # 3. مونتاژ پیام
-        # عنوان رویداد (دیگر "رویداد جدید" را در ابتدا اضافه نمی‌کنیم)
-        message_parts = [f"{RLM}📝 **{display_title}**"]
+        # 3. مونتاژ پیام در بخش‌های مختلف
+        message_parts = []
 
+        # بخش عنوان
+        if display_title: # اطمینان از اینکه عنوان خالی نیست
+             message_parts.append(f"{RLM}📝 **{display_title}**")
+
+        # بخش توضیحات
         if final_description:
-            message_parts.append(f"\n{RLM}{final_description}")
+            message_parts.append(f"\n\n{RLM}{final_description}") # دو خط جدید قبل از توضیحات
 
+        # بخش اطلاعات متا (لینک، منبع، تاریخ) در یک بلوک جدا
+        meta_info_parts = []
         if event.link:
-            # اگر لینک خود پست تلگرامی است و توضیحات حاوی آن است، شاید نیازی به تکرار نباشد
-            # اما برای اطمینان، لینک اصلی از فید را قرار می‌دهیم
-            message_parts.append(f"\n{RLM}🔗 [مشاهده کامل]({event.link})")
-
-        # منبع به همراه لینک به کانال تلگرام (اگر نام کاربری موجود باشد)
+            meta_info_parts.append(f"{RLM}🔗 [مشاهده کامل]({event.link})")
+        
         if event.source_channel_username:
-            message_parts.append(f"\n{RLM}📢 **منبع:** [{event.source_channel}](https://t.me/{event.source_channel_username})")
+            meta_info_parts.append(f"{RLM}📢 **منبع:** [{event.source_channel}](https://t.me/{event.source_channel_username})")
         else:
-            message_parts.append(f"\n{RLM}📢 **منبع:** {event.source_channel}")
+            meta_info_parts.append(f"{RLM}📢 **منبع:** {event.source_channel}")
 
         if event.published:
             try:
-                # تبدیل تاریخ به فرمت خواناتر (مثال: 26 May 2025 - 19:13)
-                # feedparser تاریخ را به صورت struct_time در entry.published_parsed می‌دهد
-                # یا می‌توانید رشته خام را فرمت کنید
-                date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z") #
-                # نمایش به وقت محلی یا یک فرمت استاندارد (GMT در اینجا خوب است)
+                date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z")
                 formatted_date = date_obj.strftime("%d %b %Y - %H:%M %Z")
-                message_parts.append(f"\n{RLM}📅 **انتشار:** {formatted_date}")
+                meta_info_parts.append(f"{RLM}📅 **انتشار:** {formatted_date}")
             except ValueError:
-                # اگر فرمت تاریخ متفاوت بود، همان رشته خام را نمایش بده (بدون ثانیه)
-                message_parts.append(f"\n{RLM}📅 **انتشار:** {event.published.split(',')[1].strip().rsplit(':',1)[0]} GMT")
+                # اگر فرمت تاریخ ورودی متفاوت بود، بخش ساده‌تری از آن را نمایش بده
+                try:
+                    # تلاش برای گرفتن بخش اصلی تاریخ بدون روز هفته و ثانیه اگر فرمت پیچیده بود
+                    main_date_part = event.published.split(',')[1].strip() if ',' in event.published else event.published
+                    meta_info_parts.append(f"{RLM}📅 **انتشار:** {main_date_part.rsplit(':',1)[0]} GMT")
+                except:
+                    meta_info_parts.append(f"{RLM}📅 **انتشار:** {event.published}") # نمایش به صورت خام در صورت بروز خطا
 
 
-        return "\n".join(message_parts).strip() # استفاده از یک \n برای جدا کردن، نه دوتا مگر بعد از عنوان اصلی
+        if meta_info_parts:
+            message_parts.append("\n\n" + "\n".join(meta_info_parts)) # دو خط جدید قبل از بلوک متا، و یک خط بین آیتم‌های متا
 
+        # پیام نهایی با حذف فضاهای خالی احتمالی در ابتدا و انتها
+        return "\n".join(filter(None,message_parts)).strip()
 
     async def publish_event(self, event: EventInfo):
         """Publish event to Telegram channel"""
