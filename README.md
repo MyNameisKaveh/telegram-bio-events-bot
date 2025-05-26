@@ -3,8 +3,8 @@ title: bio event bot
 emoji: 🧪
 colorFrom: blue
 colorTo: green
-sdk: streamlit
-sdk_version: "1.45.1"
+sdk: Docker
+sdk_version: "7.1.0"
 app_file: app.py
 pinned: false
 ---
