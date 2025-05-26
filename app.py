@@ -94,8 +94,14 @@ class RSSTelegramBot:
                 'name': 'SBU Bio Society',
                 'url': 'https://rsshub.app/telegram/channel/SBUBIOSOCIETY',
                 'channel': 'SBUBIOSOCIETY'
-            }
+            },
             # فیدهای دیگر خود را اینجا اضافه کنید
+            # کانال جدید شما برای تست:
+            {
+                'name': 'کانال تست', # می‌توانید یک نام دلخواه برای نمایش انتخاب کنید
+                'url': 'https://rsshub.app/telegram/channel/testbiopy', # آدرس RSS فید کانال
+                'channel': 'testbiopy' # نام کاربری کانال تلگرام
+            }
         ]
 
     async def fetch_feed(self, session: aiohttp.ClientSession, feed_info: dict) -> List[EventInfo]:
