@@ -1,0 +1,23 @@
+name: Sync to Hugging Face hub
+on:
+  push:
+    branches: [main] # یا master اگر شاخه اصلی شما master هست
+  workflow_dispatch: # اجازه اجرای دستی از تب Actions
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # برای گرفتن کل تاریخچه git، برای push لازمه
+          lfs: true      # اگر فایل‌های بزرگ با Git LFS دارید
+
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }} # استفاده از سکرتی که تعریف کردیم
+        # دستور زیر را با اطلاعات خودتان جایگزین کنید
+        # YOUR_HF_USERNAME: نام کاربری شما در Hugging Face
+        # YOUR_SPACE_NAME: نام Space شما در Hugging Face
+        run: git push https://Andolinism:${HF_TOKEN}@huggingface.co/spaces/Andolinism/telegram-bio-events-bot main -f
+        # مثال: git push https://Andolinism:${HF_TOKEN}@huggingface.co/spaces/Andolinism/protein-profile-viewer main -f
