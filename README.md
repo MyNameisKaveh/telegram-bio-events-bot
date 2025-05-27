@@ -6,7 +6,6 @@ colorTo: blue
 sdk: docker
 app_port: 7860 # Port your app's health check server listens on
 pinned: false 
-# license: mit # Uncomment and choose a license if you wish
 ---
 
 # Telegram Event Aggregator Bot
@@ -173,5 +172,3 @@ Contributions, issues, and feature requests are welcome. Please feel free to ope
 (Optional: Specify your license here, e.g., MIT License. If you added `license: mit` to the YAML front matter, ensure you also have a `LICENSE` file in your repository.)
 
 ---
-
-This bot was developed with assistance from an AI.
