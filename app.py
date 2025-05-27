@@ -299,16 +299,16 @@ class RSSTelegramBot:
         else:
             meta_info_parts.append(f"{self.RLM}📢 *{self._escape_md_v2('منبع:')}* {source_text_escaped}")
 
-        if event.published:
-            formatted_date_unescaped = event.published
-            try: # Try to parse and reformat the date
-                date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z") # Example: Fri, 23 May 2025 22:41:11 GMT
-                formatted_date_unescaped = date_obj.strftime("%d %b %Y - %H:%M (%Z)") # Example: 23 May 2025 - 22:41 (GMT)
-            except ValueError:
-                logger.debug(f"Could not parse date '{event.published}' with standard format. Using as is (or simplified).")
+        #if event.published:
+            #formatted_date_unescaped = event.published
+            #try: # Try to parse and reformat the date
+                #date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z") # Example: Fri, 23 May 2025 22:41:11 GMT
+                #formatted_date_unescaped = date_obj.strftime("%d %b %Y - %H:%M (%Z)") # Example: 23 May 2025 - 22:41 (GMT)
+            #except ValueError:
+                #logger.debug(f"Could not parse date '{event.published}' with standard format. Using as is (or simplified).")
                 # Fallback for other date formats if needed, or just use raw
-            if formatted_date_unescaped:
-                 meta_info_parts.append(f"{self.RLM}📅 *{self._escape_md_v2('انتشار:')}* {self._escape_md_v2(formatted_date_unescaped)}")
+            #if formatted_date_unescaped:
+                 #meta_info_parts.append(f"{self.RLM}📅 *{self._escape_md_v2('انتشار:')}* {self._escape_md_v2(formatted_date_unescaped)}")
 
         if meta_info_parts:
             # Add a clear separation (two newlines) before the meta information block
