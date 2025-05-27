@@ -8,7 +8,7 @@ from telegram import Bot
 import os
 from dataclasses import dataclass
 from typing import List, Optional
-from bs4 import BeautifulSoup # <--- کتابخانه برای تجزیه HTML
+from bs4 import BeautifulSoup # کتابخانه برای تجزیه HTML
 from aiohttp import web
 
 # Configure logging
@@ -36,7 +36,6 @@ class EventDetector:
 
     def detect_event(self, title: str, description_html: str) -> bool:
         soup = BeautifulSoup(description_html, "html.parser")
-        # حذف اولیه بخش "Forwarded From" برای دقت بیشتر در تشخیص کلمات کلیدی
         first_p_tag = soup.find('p')
         if first_p_tag and first_p_tag.get_text(strip=True).lower().startswith("forwarded from"):
             first_p_tag.decompose()
@@ -48,12 +47,10 @@ class EventDetector:
         matches = sum(1 for keyword in self.EVENT_KEYWORDS if keyword in text_lower)
         has_specific_pattern = any([
             'ثبت نام' in text_lower, 'شرکت در' in text_lower, 
-            # 'برگزار می' in text_lower, # این ممکن است بیش از حد کلی باشد
             'register' in text_lower, 'join' in text_lower, 'وبینار' in text_lower,
             'کارگاه' in text_lower, 'دوره آنلاین' in text_lower, 'سمینار' in text_lower
         ])
-        # اگر عنوان شامل کلمه کلیدی بود یا توضیحات شامل الگوی خاص بود یا تعداد کلمات کلیدی کافی بود
-        title_has_keyword = any(keyword in title.lower() for keyword in ['وبینار', 'کارگاه', 'سمینار', 'دوره', 'کنفرانس', 'همایش'])
+        title_has_keyword = any(keyword in title.lower() for keyword in ['وبینار', 'کارگاه', 'سمینار', 'دوره', 'کنفرانس', 'همایش', 'ایونت', 'نشست'])
         
         return title_has_keyword or has_specific_pattern or matches >= 1
 
@@ -73,9 +70,6 @@ class RSSTelegramBot:
         ]
 
     async def fetch_feed(self, session: aiohttp.ClientSession, feed_info: dict) -> List[EventInfo]:
-        # (این متد بدون تغییر نسبت به آخرین نسخه کامل ارائه شده باقی می‌ماند، مگر اینکه بخواهید تعداد feed.entries[:X] را تغییر دهید)
-        # ... (کد fetch_feed از پاسخ قبلی را اینجا کپی کنید) ...
-        # فقط برای اطمینان، بخش اصلی آن را اینجا می آورم:
         events = []
         feed_url, feed_name = feed_info['url'], feed_info['name']
         logger.info(f"Fetching feed: {feed_name} from {feed_url}")
@@ -85,7 +79,7 @@ class RSSTelegramBot:
                     content = await response.text()
                     feed = feedparser.parse(content)
                     logger.info(f"Fetched {feed_name}. Entries: {len(feed.entries)}")
-                    for entry in feed.entries[:10]: # یا :5 اگر هنوز می‌خواهید
+                    for entry in feed.entries[:10]: 
                         entry_id = f"{feed_info.get('channel', feed_name)}_{entry.get('id', entry.get('link', ''))}"
                         if entry_id not in self.processed_items:
                             raw_title = entry.get('title', '').strip()
@@ -107,158 +101,151 @@ class RSSTelegramBot:
             logger.error(f"Exception in fetch_feed for {feed_name} ({feed_url}): {e}", exc_info=True)
         return events
 
-
     def _clean_html_and_extract_text(self, html_content: str) -> str:
-        """
-        HTML را با BeautifulSoup پاکسازی می‌کند تا متن ساده با فرمت خوب تولید شود.
-        - بخش "Forwarded From" را حذف می‌کند.
-        - تگ <br> را به خط جدید تبدیل می‌کند.
-        - سعی در حفظ پاراگراف‌بندی دارد.
-        """
         if not html_content:
             return ""
-
         soup = BeautifulSoup(html_content, "html.parser")
 
         # 1. حذف بخش "Forwarded From"
-        # معمولاً اولین پاراگراف در خروجی RSSHub برای پیام‌های فوروارد شده است.
-        first_p_tag = soup.find('p')
-        if first_p_tag:
-            first_p_text = first_p_tag.get_text(strip=True)
-            if first_p_text.lower().startswith("forwarded from"):
-                logger.debug(f"Removing 'Forwarded From' paragraph: {first_p_tag.get_text(strip=True)[:100]}")
-                first_p_tag.decompose() # حذف کامل تگ p و محتویاتش
+        first_p = soup.find('p')
+        if first_p and first_p.get_text(strip=True).lower().startswith("forwarded from"):
+            first_p.decompose()
 
-        # 2. تبدیل تگ‌های <br> به کاراکتر خط جدید (\n)
+        # 2. تبدیل تگ‌های <br> به یک placeholder خاص برای حفظ آن‌ها
+        # و همچنین اضافه کردن placeholder بعد از تگ‌های پاراگراف برای جداسازی
+        br_placeholder = "<<BR_TAG_PLACEHOLDER>>"
         for br_tag in soup.find_all("br"):
-            br_tag.replace_with("\n")
+            br_tag.replace_with(br_placeholder)
+        for p_tag in soup.find_all("p"): # برای جداسازی پاراگراف‌ها
+             if p_tag.get_text(strip=True): # فقط اگر پاراگراف محتوا داشت
+                p_tag.append(br_placeholder) # یک شکست خط بعد از هر پاراگراف اضافه کن
 
-        # 3. استخراج متن با حفظ ساختار بهتر
-        # از get_text(separator='\n') استفاده می‌کنیم که بین بلاک‌های مختلف خط جدید می‌گذارد
-        # و strip=True فضاهای خالی اضافی در ابتدا و انتهای هر بخش متنی را حذف می‌کند.
-        text_content = soup.get_text(separator='\n', strip=True)
+        # 3. استخراج متن، اجازه بده BeautifulSoup فاصله‌گذاری بین تگ‌های inline را مدیریت کند
+        text_content = soup.get_text(separator=' ', strip=True) # separator=' ' برای جلوگیری از چسبیدن کلمات inline
         
-        # نرمال‌سازی شکستگی خطوط: حذف خطوط کاملاً خالی و فضاهای خالی ابتدا/انتهای هر خط
-        lines = [line.strip() for line in text_content.splitlines()]
-        cleaned_text = "\n".join(line for line in lines if line) # فقط خطوط غیرخالی را نگه دار
+        # 4. جایگزینی placeholder با \n واقعی
+        text_with_breaks = text_content.replace(br_placeholder, "\n")
+        
+        # 5. نرمال‌سازی فضاهای خالی و خطوط جدید
+        # تبدیل چندین خط جدید متوالی به یک خط جدید (برای حفظ پاراگراف‌بندی بصری)
+        # و حذف فضاهای خالی ابتدا و انتهای هر خط
+        lines = [line.strip() for line in text_with_breaks.splitlines()]
+        
+        # برای حفظ پاراگراف‌بندی که توسط دو \n ایجاد می‌شود، باید کمی متفاوت عمل کنیم
+        # اما برای سادگی فعلی، تمام خطوط کاملاً خالی را حذف می‌کنیم
+        # این کار باعث می‌شود پاراگراف‌ها با یک \n از هم جدا شوند
+        cleaned_text = "\n".join(line for line in lines if line) # فقط خطوط غیرخالی
 
         return cleaned_text
 
     def format_event_message(self, event: EventInfo) -> str:
         RLM = "\u200F"
-
         display_title = event.title.strip()
         
-        # پاکسازی توضیحات با استفاده از متد جدید
         description_cleaned_text = self._clean_html_and_extract_text(event.description)
         
-        # آماده‌سازی عنوان و توضیحات برای بررسی تکرار
-        # یک لیست از کاراکترها/ایموجی‌هایی که ممکن است در ابتدا باشند و برای مقایسه باید حذف شوند
-        leading_chars_to_strip_pattern = r"^[🔁🖼⚜️📝📢✔️✅🔆🗓️📍💳#٪♦️🔹🔸🟢♦️▪️▫️▪️•●🔘👁‍🗨\s]*(?=[^\s])"
-        # حذف این کاراکترها از ابتدای عنوان برای مقایسه
-        normalized_title_for_comparison = re.sub(leading_chars_to_strip_pattern, "", display_title, flags=re.IGNORECASE).strip().lower()
-        normalized_title_for_comparison = re.sub(r"[\s.:…]+$", "", normalized_title_for_comparison) # حذف نقطه‌گذاری انتهایی
-
         description_to_display = description_cleaned_text
-        title_is_separate = True # به طور پیش‌فرض عنوان جداگانه نمایش داده می‌شود
+        title_is_displayed_separately = True # به طور پیش‌فرض عنوان جداگانه نمایش داده می‌شود
 
-        if description_cleaned_text and normalized_title_for_comparison:
-            first_desc_line = description_cleaned_text.split('\n', 1)[0].strip()
-            # نرمال‌سازی خط اول توضیحات برای مقایسه
-            normalized_first_desc_line = re.sub(leading_chars_to_strip_pattern, "", first_desc_line, flags=re.IGNORECASE).strip().lower()
-            normalized_first_desc_line = re.sub(r"[\s.:…]+$", "", normalized_first_desc_line)
+        # --- منطق جدید برای بررسی تکرار عنوان ---
+        if description_cleaned_text and display_title:
+            # رشته‌ای از ایموجی‌ها و کاراکترهای خاص که ممکن است در ابتدای عنوان باشند
+            leading_symbols_pattern = r"^[🔁🖼⚜️📝📢✔️✅🔆🗓️📍💳#٪♦️🔹🔸🟢♦️▪️▫️▪️•●🔘👁‍🗨\s]*(?=[^\s])"
+            trailing_punctuation_pattern = r"[\s.:…]+$"
 
-            # اگر عنوان نرمال‌شده و خط اول توضیحات نرمال‌شده یکی بودند
-            # یا اگر عنوان بخش قابل توجهی از ابتدای خط اول توضیحات بود (مثلاً عنوان کوتاه شده در RSS)
-            if (normalized_title_for_comparison == normalized_first_desc_line) or \
-               (len(normalized_title_for_comparison) > 8 and normalized_first_desc_line.startswith(normalized_title_for_comparison)) or \
-               (len(normalized_first_desc_line) > 8 and normalized_title_for_comparison.startswith(normalized_first_desc_line)): # بررسی اینکه آیا یکی پیشوند دیگری است
-                
-                logger.info(f"Title considered redundant or part of description's first line for: '{display_title}'")
-                # در این حالت، عنوان جداگانه نمایش داده نمی‌شود و توضیحات از ابتدا نمایش داده می‌شود
-                # (چون خود توضیحات شامل خط اولی است که شبیه عنوان است)
-                # یا اگر می‌خواهید حتما عنوان جدا باشد و خط اول از توضیحات حذف شود:
-                if '\n' in description_cleaned_text:
-                    description_to_display = description_cleaned_text.split('\n', 1)[1].strip()
-                else: # توضیحات فقط همان یک خط بود
-                    description_to_display = "" 
-                # تمیزکاری مجدد اگر با حذف خط اول، خالی شده باشد
-                description_to_display = "\n".join(filter(None, (line.strip() for line in description_to_display.splitlines())))
-                
-        # محدود کردن طول نهایی توضیحات
-        DESCRIPTION_MAX_LEN = 2000  # افزایش بیشتر محدودیت، چون می‌خواهید چیزی از قلم نیفتد
-                                     # اما مراقب محدودیت کلی تلگرام (۴۰۹۶ کاراکتر) باشید
+            def normalize_text_for_comparison(text):
+                if not text: return ""
+                text = re.sub(leading_symbols_pattern, "", text, flags=re.IGNORECASE).strip()
+                text = re.sub(trailing_punctuation_pattern, "", text)
+                return text.lower()
+
+            title_comp = normalize_text_for_comparison(display_title)
+            
+            if title_comp: # فقط اگر عنوان نرمال‌شده خالی نبود
+                first_desc_line = description_cleaned_text.split('\n', 1)[0].strip()
+                first_desc_line_comp = normalize_text_for_comparison(first_desc_line)
+
+                # اگر عنوان نرمال‌شده با خط اول توضیحات نرمال‌شده یکی بود،
+                # یا اگر یکی پیشوند معنادار دیگری بود
+                if (title_comp == first_desc_line_comp) or \
+                   (len(title_comp) > 7 and first_desc_line_comp.startswith(title_comp)) or \
+                   (len(first_desc_line_comp) > 7 and title_comp.startswith(first_desc_line_comp)):
+                    
+                    logger.info(f"Title ('{display_title}') matches first line of desc ('{first_desc_line}'). Removing first line from description.")
+                    if '\n' in description_cleaned_text:
+                        description_to_display = description_cleaned_text.split('\n', 1)[1].strip()
+                    else: # توضیحات فقط همان یک خط بود
+                        description_to_display = "" 
+                    
+                    description_to_display = "\n".join(filter(None, (line.strip() for line in description_to_display.splitlines())))
+        # --- پایان منطق بررسی تکرار عنوان ---
+        
+        DESCRIPTION_MAX_LEN = 2500 # افزایش بیشتر برای اینکه چیزی از قلم نیفتد
         if len(description_to_display) > DESCRIPTION_MAX_LEN:
-            # سعی کن در یک نقطه مناسب (مثل انتهای جمله) کوتاه کنی
             cut_off_point = description_to_display.rfind('.', 0, DESCRIPTION_MAX_LEN)
-            if cut_off_point != -1 and cut_off_point > DESCRIPTION_MAX_LEN - 300: # اگر نقطه خیلی دور نبود
+            if cut_off_point != -1 and cut_off_point > DESCRIPTION_MAX_LEN - 300:
                  description_to_display = description_to_display[:cut_off_point+1] + f"{RLM} (...)"
             else:
                  description_to_display = description_to_display[:DESCRIPTION_MAX_LEN] + f"{RLM}..."
         
-        if not description_to_display.strip(): # اگر توضیحات خالی شد
+        if not description_to_display.strip():
             description_to_display = ""
 
-        # مونتاژ پیام
         message_parts = []
-        if display_title: # عنوان همیشه نمایش داده می‌شود (مگر اینکه در آینده تصمیم دیگری بگیریم)
+        if display_title:
              message_parts.append(f"{RLM}📝 **{display_title}**")
 
         if description_to_display:
-            # اگر عنوان و توضیحات هر دو وجود دارند، دو خط فاصله
-            # اگر فقط توضیحات وجود دارد (و عنوان جداگانه نمایش داده نشده)، فاصله‌ای لازم نیست
-            separator = "\n\n" if display_title else ""
+            separator = "\n\n" if display_title else "" # اگر عنوان بود، دو خط فاصله
             message_parts.append(f"{separator}{RLM}{description_to_display}")
 
         meta_info_parts = []
-        if event.link:
-            meta_info_parts.append(f"{RLM}🔗 [مشاهده کامل رویداد]({event.link})")
-        
+        if event.link: meta_info_parts.append(f"{RLM}🔗 [مشاهده کامل رویداد]({event.link})")
         if event.source_channel_username:
             meta_info_parts.append(f"{RLM}📢 **منبع:** [{event.source_channel}](https://t.me/{event.source_channel_username})")
-        else:
-            meta_info_parts.append(f"{RLM}📢 **منبع:** {event.source_channel}")
+        else: meta_info_parts.append(f"{RLM}📢 **منبع:** {event.source_channel}")
 
         if event.published:
             formatted_date = ""
             try:
-                date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z") # Fri, 23 May 2025 22:41:11 GMT
-                formatted_date = date_obj.strftime("%d %b %Y - %H:%M (%Z)") # 23 May 2025 - 22:41 (GMT)
-            except ValueError:
-                try: # تلاش برای فرمت ساده‌تر
-                    main_date_part = event.published.split(',')[1].strip() if ',' in event.published else event.published
-                    formatted_date = main_date_part.rsplit(':',2)[0] + " " + main_date_part.rsplit(' ',1)[-1] # 23 May 2025 22 (GMT)
-                except: formatted_date = event.published # نمایش خام
-            if formatted_date:
-                 meta_info_parts.append(f"{RLM}📅 **انتشار:** {formatted_date}")
+                date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z")
+                formatted_date = date_obj.strftime("%d %b %Y - %H:%M (%Z)")
+            except: formatted_date = event.published # نمایش خام در صورت خطا
+            if formatted_date: meta_info_parts.append(f"{RLM}📅 **انتشار:** {formatted_date}")
 
         if meta_info_parts:
-            # اگر بخش اصلی پیام (عنوان یا توضیحات) وجود داشت، دو خط فاصله تا متا
-            separator_meta = "\n\n" if message_parts else ""
+            separator_meta = "\n\n" if message_parts else "" # اگر متن اصلی بود، دو خط فاصله تا متا
             message_parts.append(separator_meta + "\n".join(meta_info_parts))
 
-        final_message = "\n".join(message_parts).strip() # filter(None,..) حذف شد تا فاصله‌های عمدی حفظ شوند
-                                                          # .strip() نهایی برای حذف فضاهای اضافی کل پیام
-        
+        final_message = "\n".join(message_parts).strip()
+                                                          
         TELEGRAM_MSG_MAX_LEN = 4096
         if len(final_message) > TELEGRAM_MSG_MAX_LEN:
-            logger.warning(f"Message for '{display_title}' too long ({len(final_message)} chars), will be truncated by Telegram or cause error.")
-            # اگر خیلی طولانی شد، باید استراتژی بهتری برای کوتاه کردن کل پیام داشته باشیم
-            # فعلا فقط هشدار می‌دهیم. تلگرام خودش کوتاه می‌کند یا خطا می‌دهد.
-            
+            logger.warning(f"Msg for '{display_title}' too long ({len(final_message)}), truncating.")
+            # کوتاه کردن اضطراری اگر خیلی طولانی شد
+            # این باید بهتر مدیریت شود، مثلا با تقسیم پیام
+            excess_chars = len(final_message) - (TELEGRAM_MSG_MAX_LEN - 20) # برای " (...)" جا بگذار
+            if description_to_display and len(description_to_display) > excess_chars:
+                # سعی کن از توضیحات کم کنی
+                description_to_display_truncated_further = description_to_display[:-excess_chars-len(f"{RLM} (...)")] + f"{RLM} (...)"
+                # ... و پیام را دوباره بساز (این بخش برای سادگی حذف شد، اما یک راه حل کامل‌تر نیاز است)
+                final_message = final_message[:TELEGRAM_MSG_MAX_LEN - 20] + f"{RLM} (...)"
+            else: # اگر توضیحات کوتاه بود یا نبود، از انتهای پیام ببر
+                final_message = final_message[:TELEGRAM_MSG_MAX_LEN - 20] + f"{RLM} (...)"
+
         return final_message
 
     # ... (متدهای publish_event و run_monitoring_loop بدون تغییر از پاسخ قبلی) ...
     async def publish_event(self, event: EventInfo):
         try:
             message = self.format_event_message(event)
-            if not message or (not event.title and not event.description): # اگر پیام یا محتوای اصلی خالی بود
-                logger.info(f"Skipping empty or content-less message for an event from {event.source_channel}.")
+            if not message or (not event.title and not event.description): 
+                logger.info(f"Skipping empty or content-less message for event from {event.source_channel} (Title: {event.title[:30]}...).")
                 return
 
             await self.bot.send_message(
                 chat_id=self.target_channel, text=message,
-                parse_mode='Markdown', disable_web_page_preview=False # True برای جلوگیری از پیش‌نمایش لینک‌ها اگر شلوغ می‌شود
+                parse_mode='Markdown', disable_web_page_preview=True # پیش‌نمایش لینک را غیرفعال کردم تا پیام شلوغ نشود
             )
             logger.info(f"Published event: {event.title[:60]}... from {event.source_channel}")
         except Exception as e:
@@ -279,6 +266,8 @@ class RSSTelegramBot:
             
             if all_new_events:
                 logger.info(f"Found {len(all_new_events)} new event(s).")
+                # می‌توانید رویدادها را بر اساس تاریخ انتشارشان مرتب کنید (اگر معتبر باشد)
+                # all_new_events.sort(key=lambda ev: ev.published_parsed_time_object_if_available, reverse=True)
                 for event_to_publish in all_new_events:
                     await self.publish_event(event_to_publish)
                     await asyncio.sleep(5) 
@@ -336,7 +325,7 @@ async def main():
         logger.error(f"Critical bot error in main: {e}", exc_info=True)
     finally:
         logger.info("Bot shutting down...")
-        if 'web_server_task' in locals() and web_server_task and not web_server_task.done(): #locals() اضافه شد
+        if 'web_server_task' in locals() and web_server_task and not web_server_task.done():
             web_server_task.cancel()
             try: await web_server_task
             except asyncio.CancelledError: logger.info("Web server task cancelled.")
