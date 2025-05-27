@@ -6,11 +6,11 @@ import html # برای escape/unescape کردن HTML entities
 import aiohttp
 import feedparser
 from telegram import Bot
-from telegram.constants import ParseMode # ParseMode را اضافه می‌کنیم
+from telegram.constants import ParseMode
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
-from bs4 import BeautifulSoup, NavigableString, Tag # BeautifulSoup و اجزایش را اضافه می‌کنیم
+from typing import List, Optional
+from bs4 import BeautifulSoup, NavigableString, Tag
 from aiohttp import web
 
 # Configure logging
@@ -27,8 +27,7 @@ class EventInfo:
     source_channel_username: Optional[str] = None
 
 class EventDetector:
-    # (کد EventDetector بدون تغییر از پاسخ قبلی که شامل BeautifulSoup برای استخراج متن بود، باقی می‌ماند)
-    # ... (کد EventDetector از پاسخ قبلی را اینجا کپی کنید) ...
+    # (کد EventDetector بدون تغییر از پاسخ قبلی باقی می‌ماند)
     EVENT_KEYWORDS = [
         'وبینار', 'webinar', 'کارگاه', 'workshop', 'سمینار', 'seminar', 'کنفرانس', 'conference', 
         'همایش', 'congress', 'نشست', 'meeting', 'دوره آموزشی', 'course', 'کلاس', 'class', 
@@ -65,7 +64,6 @@ class EventDetector:
         title_has_keyword = any(keyword in title_lower for keyword in ['آموزش', 'فراخوان', 'لایو'])
         return title_has_keyword or has_specific_pattern or matches >= 2
 
-
 class RSSTelegramBot:
     def __init__(self, bot_token: str, target_channel: str):
         self.bot_token = bot_token
@@ -74,24 +72,20 @@ class RSSTelegramBot:
         self.detector = EventDetector()
         self.processed_items = set()
         self.rss_feeds = [
-            # ... لیست فیدهای شما ...
             {'name': 'WinCell Co', 'url': 'https://rsshub.app/telegram/channel/wincellco', 'channel': 'wincellco'},
             {'name': 'Rayazistazma', 'url': 'https://rsshub.app/telegram/channel/Rayazistazma', 'channel': 'Rayazistazma'},
             {'name': 'SBU Bio Society', 'url': 'https://rsshub.app/telegram/channel/SBUBIOSOCIETY', 'channel': 'SBUBIOSOCIETY'},
             {'name': 'Test BioPy Channel', 'url': 'https://rsshub.app/telegram/channel/testbiopy', 'channel': 'testbiopy'}
         ]
-        # تگ‌های HTML مجاز در تلگرام و اتریبیوت‌های مجاز برای تگ <a>
-        self.ALLOWED_TAGS = {
+        self.ALLOWED_TAGS_TELEGRAM = { # تگ‌های HTML مجاز تلگرام
             'b': [], 'strong': [], 'i': [], 'em': [], 'u': [], 's': [], 
             'strike': [], 'del': [], 'code': [], 'pre': [], 
             'a': ['href'], 'span': ['class'] # span فقط برای tg-spoiler
         }
-        self.RLM = "\u200F"
-
+        self.RLM = "\u200F" # Right-to-Left Mark
 
     async def fetch_feed(self, session: aiohttp.ClientSession, feed_info: dict) -> List[EventInfo]:
-        # (این متد بدون تغییر نسبت به آخرین نسخه کامل ارائه شده باقی می‌ماند)
-        # ... (کد fetch_feed از پاسخ قبلی را اینجا کپی کنید) ...
+        # (این متد بدون تغییر از پاسخ قبلی باقی می‌ماند)
         events = []
         feed_url, feed_name = feed_info['url'], feed_info['name']
         logger.info(f"Fetching feed: {feed_name} from {feed_url}")
@@ -124,126 +118,104 @@ class RSSTelegramBot:
             logger.error(f"Exception in fetch_feed for {feed_name} ({feed_url}): {e}", exc_info=True)
         return events
 
-    def _sanitize_href(self, url: Optional[str]) -> str:
+    def _sanitize_href(self, url: Optional[str]) -> Optional[str]:
         if url:
             url = url.strip()
-            # فقط URL های امن را اجازه بده
             if url.lower().startswith(('http://', 'https://', 'mailto:', 'tg://')):
-                return html.escape(url, quote=True) # escape کردن برای مقدار اتریبیوت
-        return ""
+                return html.escape(url, quote=True)
+        return None
 
-    def _convert_node_to_telegram_html(self, node) -> str:
-        """به صورت بازگشتی یک گره BeautifulSoup را به رشته HTML امن برای تلگرام تبدیل می‌کند."""
-        if isinstance(node, NavigableString):
-            return html.escape(str(node)) # متن‌ها باید escape شوند
+    def _recursive_html_to_telegram_html(self, element) -> str:
+        """ گره BeautifulSoup را به رشته HTML امن برای تلگرام (با حفظ تگ‌های مجاز) تبدیل می‌کند. """
+        if isinstance(element, NavigableString):
+            return html.escape(str(element))
+        
+        if element.name == 'br':
+            return '\n'
 
-        if node.name == 'br':
-            return '\n' # <br> به خط جدید تبدیل می‌شود
+        # پردازش فرزندان ابتدا
+        children_html = "".join(self._recursive_html_to_telegram_html(child) for child in element.children)
 
-        # مدیریت تگ‌های بلاک اصلی برای ایجاد فاصله پاراگراف
-        # تلگرام تگ <p> را به طور خاص برای فاصله نمی‌شناسد، باید از \n\n استفاده کنیم
-        # این تابع فقط محتوای داخلی را برمی‌گرداند، فاصله‌گذاری بین بلاک‌ها باید در سطح بالاتر انجام شود
-        # یا اینکه در اینجا بعد از هر بلاک \n\n اضافه کنیم و سپس نرمال‌سازی کنیم.
-
-        # پردازش فرزندان
-        children_html = "".join(self._convert_node_to_telegram_html(child) for child in node.children)
-
-        tag_name = node.name
-        if tag_name in self.ALLOWED_TAGS:
-            attrs_str = ""
+        tag_name = element.name
+        if tag_name in self.ALLOWED_TAGS_TELEGRAM:
+            attrs = {}
             if tag_name == 'a':
-                href = self._sanitize_href(node.get('href'))
-                if href:
-                    attrs_str = f' href="{href}"'
-                else: # اگر لینک معتبر نبود، تگ a را نادیده بگیر و فقط محتوایش را برگردان
-                    return children_html 
+                href = self._sanitize_href(element.get('href'))
+                if not href: return children_html # اگر لینک معتبر نبود، فقط محتوا
+                attrs['href'] = href
             elif tag_name == 'span':
-                # فقط اسپویلر تلگرام مجاز است
-                if node.get('class') == ['tg-spoiler']:
-                    attrs_str = ' class="tg-spoiler"'
-                else: # سایر span ها نادیده گرفته می‌شوند
-                    return children_html
-            elif tag_name == 'pre':
-                 # برای <pre>، اگر داخلش <code> با کلاس زبان بود، آن را هم در نظر بگیر
-                code_child = node.find('code', class_=lambda x: x and isinstance(x, list) and x[0].startswith('language-'))
+                if element.get('class') == ['tg-spoiler']:
+                    attrs['class'] = 'tg-spoiler'
+                else: return children_html # اسپویلر نبود، فقط محتوا
+            elif tag_name == 'pre': # برای pre، اگر code با کلاس زبان داشت
+                code_child = element.find('code', class_=lambda x: x and isinstance(x, list) and x[0].startswith('language-'))
                 if code_child:
                     lang = html.escape(code_child['class'][0].split('-',1)[1], quote=True)
-                    # محتوای کد باید escape شود. children_html از قبل این کار را برای محتوای code_child انجام داده
+                    # محتوای کد از قبل توسط فراخوانی بازگشتی escape شده است
+                    # این بخش نیاز به دقت دارد تا مطمئن شویم محتوای code_child فقط متن escape شده است
+                    # children_html در اینجا باید محتوای داخل <code> باشد.
                     return f'<pre><code class="language-{lang}">{children_html}</code></pre>'
-                # اگر کد ساده بود یا بدون کلاس زبان
-                return f"<pre>{children_html}</pre>"
-            elif tag_name == 'code' and node.parent.name == 'pre':
-                 # اگر code داخل pre بود، خود pre تگ را می‌سازد، اینجا فقط محتوا را برگردان
-                 return children_html
+                return f"<pre>{children_html}</pre>" # pre ساده
+            elif tag_name == 'code' and element.parent.name == 'pre':
+                return children_html # محتوای code داخل pre، خود pre تگ را می‌سازد
 
-
-            # برای سایر تگ‌های مجاز مانند b, i, u, s
+            # ساخت رشته اتریبیوت‌ها
+            attrs_str = "".join([f' {k}="{v}"' for k, v in attrs.items()])
             return f"<{tag_name}{attrs_str}>{children_html}</{tag_name}>"
         
-        # اگر تگ مجاز نبود، فقط محتوای فرزندانش را برگردان (unwrap)
+        # اگر تگ در لیست مجاز نبود، فقط محتوای فرزندان (حذف تگ)
         return children_html
 
     def _prepare_description_telegram_html(self, html_content: str) -> str:
-        if not html_content:
-            return ""
+        if not html_content: return ""
         soup = BeautifulSoup(html_content, "html.parser")
 
         # 1. حذف بخش "Forwarded From"
-        first_p = soup.find('p')
+        first_p = soup.find('p', recursive=False) # فقط پاراگراف سطح اول
         if first_p and first_p.get_text(strip=True).lower().startswith("forwarded from"):
             first_p.decompose()
         
-        # 2. تبدیل کل محتوای پاکسازی شده به HTML سازگار با تلگرام
-        # این کار را با پیمایش فرزندان body یا خود soup انجام می‌دهیم
-        # و برای هر بلاک اصلی (مثل <p> های سابق) یک \n\n اضافه می‌کنیم.
+        # 2. تبدیل محتوای اصلی به HTML سازگار با تلگرام
+        # ما به جای پیمایش دستی تگ‌های بلاک، کل محتوای soup (پس از حذف احتمالی Forwarded From)
+        # را به تابع بازگشتی می‌دهیم. تابع بازگشتی <br> را به \n تبدیل می‌کند.
+        # سپس نرمال‌سازی خطوط جدید برای ایجاد فاصله‌های پاراگرافی انجام می‌شود.
         
-        parts = []
-        # به جای پیمایش تگ‌های خاص، کل بدنه را به تابع بازگشتی می‌دهیم
-        # و سپس \n ها را نرمال‌سازی می‌کنیم.
-        # این روش به حفظ ساختار درختی و تودرتو کمک می‌کند.
+        processed_html_parts = []
+        # اگر soup.body وجود داشت و فرزند داشت، از آن استفاده کن، در غیر اینصورت از خود soup
+        container_to_process = soup.body if soup.body and soup.body.contents else soup
         
-        # پاکسازی اولیه برای تبدیل ساختارهای بلاک به همراه \n
-        # این بخش نیاز به دقت زیادی دارد تا ساختار حفظ شود
-        # برای مثال، بعد از هر تگ p یا div که در ریشه قرار دارد، دو خط جدید اضافه می‌کنیم.
-        body_content_tags = soup.find_all(['p', 'div'], recursive=False) # فقط تگ‌های سطح اول
-        if not body_content_tags and soup.body: # اگر تگ body بود ولی p, div مستقیم نداشت
-            body_content_tags = soup.body.contents
-        elif not body_content_tags: # اگر body هم نبود، از خود soup شروع کن
-             body_content_tags = soup.contents
-
-        for element in body_content_tags:
-            converted_html_part = self._convert_node_to_telegram_html(element)
-            if converted_html_part.strip(): # فقط اگر بخشی محتوا داشت
-                parts.append(converted_html_part)
-
-        # اتصال بخش‌های تبدیل شده با دو خط جدید (برای ایجاد پاراگراف)
-        # این ممکن است بیش از حد \n\n ایجاد کند اگر خود _convert_node_to_telegram_html هم \n گذاشته باشد.
-        # بهتر است _convert_node_to_telegram_html فقط تگ‌ها را تبدیل کند و \n ها را اینجا مدیریت کنیم.
-        # فعلا با \n ساده join می‌کنیم و سپس نرمال‌سازی می‌کنیم.
+        for element in container_to_process.children: # پیمایش فرزندان سطح اول کانتینر
+            html_part = self._recursive_html_to_telegram_html(element)
+            # اگر خود element یک بلاک اصلی بود (مثل p, div)، بعدش یک \n\n اضافه می‌کنیم
+            # این برای حفظ فاصله‌های پاراگرافی است، چون تلگرام <p> را برای فاصله نمی‌شناسد.
+            if element.name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'blockquote', 'hr', 'table']:
+                # اگر html_part با \n تمام نشده بود، یک \n اضافه کن (برای جداسازی از بلاک بعدی)
+                # و چون بلاک است، یک \n دیگر برای ایجاد پاراگراف
+                stripped_part = html_part.rstrip('\n')
+                if stripped_part: # فقط اگر محتوا داشت
+                    processed_html_parts.append(stripped_part + "\n\n")
+            elif html_part.strip(): # اگر inline بود یا فقط متن
+                processed_html_parts.append(html_part)
         
-        final_html = "\n".join(parts).strip()
+        final_html = "".join(processed_html_parts)
         
         # نرمال‌سازی خطوط جدید: بیش از دو \n متوالی را به دو \n تبدیل کن
-        final_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', final_html)
-        # حذف خطوط خالی که ممکن است فقط شامل RLM باشند
-        final_html = "\n".join(line for line in final_html.splitlines() if line.strip() != self.RLM and line.strip())
-
-        return final_html.strip()
-
+        final_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', final_html).strip()
+        return final_html
 
     def format_event_message(self, event: EventInfo) -> str:
-        display_title = event.title.strip()
+        display_title_text = event.title.strip() # عنوان به صورت متن ساده
         
-        # تبدیل توضیحات به HTML سازگار با تلگرام
+        # توضیحات به فرمت HTML سازگار با تلگرام تبدیل می‌شود
         description_telegram_html = self._prepare_description_telegram_html(event.description)
         
-        # برای بررسی تکرار، یک نسخه متنی از توضیحات و عنوان نیاز داریم
-        temp_soup_desc = BeautifulSoup(description_telegram_html, "html.parser") # از HTML تبدیل شده، متن بگیر
-        description_plain_text_for_check = temp_soup_desc.get_text(separator=' ', strip=True)
+        # برای بررسی تکرار، یک نسخه متنی ساده از توضیحات HTML شده لازم داریم
+        temp_soup_for_plain_text = BeautifulSoup(description_telegram_html, "html.parser")
+        description_plain_text_for_check = temp_soup_for_plain_text.get_text(separator=' ', strip=True)
 
-        description_to_display_html = description_telegram_html
-        
-        if description_plain_text_for_check and display_title:
+        show_separate_title = True # به طور پیش‌فرض عنوان نمایش داده می‌شود
+
+        if description_plain_text_for_check and display_title_text:
             leading_symbols_pattern = r"^[🔁🖼⚜️📝📢✔️✅🔆🗓️📍💳#٪♦️🔹🔸🟢♦️▪️▫️▪️•●🔘👁‍🗨\s]*(?=[^\s])"
             trailing_punctuation_pattern = r"[\s.:…]+$"
             def normalize_text(text):
@@ -252,112 +224,87 @@ class RSSTelegramBot:
                 text = re.sub(trailing_punctuation_pattern, "", text)
                 return text.lower().strip()
 
-            title_comp = normalize_text(display_title)
+            title_comp = normalize_text(display_title_text)
             if title_comp:
                 first_desc_line_plain = description_plain_text_for_check.split('\n', 1)[0].strip()
                 first_desc_line_comp = normalize_text(first_desc_line_plain)
 
-                if first_desc_line_comp and \
-                   (title_comp == first_desc_line_comp or \
-                   (len(title_comp) >= 8 and first_desc_line_comp.startswith(title_comp)) or \
-                   (len(first_desc_line_comp) >= 8 and title_comp.startswith(first_desc_line_comp))):
-                    
-                    logger.info(f"HTML MODE - Title ('{display_title}') considered redundant with first line of desc ('{first_desc_line_plain}'). Adjusting.")
-                    # برای HTML، حذف خط اول کمی پیچیده‌تر است.
-                    # ساده‌ترین کار این است که اگر تکرار بود، کل توضیحات را نمایش ندهیم اگر خیلی کوتاه بود،
-                    # یا اگر طولانی بود، سعی کنیم بخش اول را حذف کنیم (که ساده نیست در HTML)
-                    # فعلا اگر تکرار بود و توضیحات فقط همان خط بود، خالی‌اش می‌کنیم.
-                    # این بخش نیاز به بهبود دارد: چگونه یک "خط" را از رشته HTML حذف کنیم.
-                    # برای سادگی، اگر خط اول توضیحات (به صورت متنی) با عنوان یکی بود، کل توضیحات HTML را نگه می‌داریم
-                    # و صرفا عنوان جداگانه را نمایش نمی‌دهیم یا باید راهی برای حذف بخش اول HTML پیدا کنیم.
-                    # فعلا، اگر تکرار بود، همان منطق قبلی (حذف خط اول از نسخه متنی و سپس فرمت مجدد) را نمی‌توان به سادگی روی HTML اعمال کرد.
-                    # پس، اگر تکرار بود، عنوان را نمایش می‌دهیم و توضیحات را هم کامل می‌آوریم، یا سعی می‌کنیم از توضیحات کم کنیم.
-                    # این بخش نیاز به بازنگری اساسی دارد اگر بخواهیم بخش اول یک رشته HTML را حذف کنیم.
-                    # برای این نسخه، اگر تکرار بود، فقط لاگ می‌گیریم و هر دو را نمایش می‌دهیم، چون حذف از HTML پیچیده است.
-                    # یا اینکه، اگر عنوان تکراری بود، خود عنوان را حذف کنیم و بگذاریم توضیحات شامل آن باشد.
-                    # **تصمیم فعلی: اگر تکرار بود، خط اول را از description_telegram_html (اگر با <br> جدا شده بود) حذف می‌کنیم.**
-                    # این کار بسیار تقریبی است.
-                    if title_comp == first_desc_line_comp: # فقط اگر دقیقا یکی بودند
-                        if '\n' in description_telegram_html: # فرض می‌کنیم \n جداکننده خط اول است
-                            description_to_display_html = description_telegram_html.split('\n', 1)[1].strip()
-                        else:
-                            description_to_display_html = "" # کل توضیحات همان عنوان بود
+                if first_desc_line_comp:
+                    # اگر عنوان نرمال‌شده با خط اول توضیحات نرمال‌شده یکی بود، یا شباهت زیادی داشت
+                    if (title_comp == first_desc_line_comp) or \
+                       (len(title_comp) > 10 and first_desc_line_comp.startswith(title_comp)) or \
+                       (len(first_desc_line_comp) > 10 and title_comp.startswith(first_desc_line_comp)):
+                        logger.info(f"Title ('{display_title_text}') considered part of description. Not showing separate title.")
+                        show_separate_title = False # عنوان جداگانه نمایش داده نشود
 
-
-        DESCRIPTION_MAX_LEN_HTML = 3800 # برای HTML محدودیت کاراکتر کمتر است چون خود تگ‌ها هم فضا می‌گیرند
-        if len(description_to_display_html) > DESCRIPTION_MAX_LEN_HTML:
-            # کوتاه کردن HTML بدون شکستن تگ‌ها پیچیده است. فعلا یک کوتاه کردن ساده متنی انجام می‌دهیم.
-            # این ممکن است HTML را نامعتبر کند. راه بهتر، کوتاه کردن قبل از تبدیل به HTML است یا استفاده از کتابخانه.
-            temp_soup = BeautifulSoup(description_to_display_html, "html.parser")
-            plain_text_for_truncate = temp_soup.get_text(separator=' ', strip=True)
-            if len(plain_text_for_truncate) > DESCRIPTION_MAX_LEN_HTML: # اگر متن خالص هم طولانی بود
-                cut_off_point = plain_text_for_truncate.rfind('.', 0, DESCRIPTION_MAX_LEN_HTML - 20) # -20 برای " (...)"
-                if cut_off_point != -1:
-                    truncated_plain_text = plain_text_for_truncate[:cut_off_point+1] + f"{self.RLM} (...)"
-                else:
-                    truncated_plain_text = plain_text_for_truncate[:DESCRIPTION_MAX_LEN_HTML - 20] + f"{self.RLM}..."
-                # تبدیل مجدد متن کوتاه شده به HTML ساده (فقط escape کردن)
-                description_to_display_html = html.escape(truncated_plain_text) # این فرمت غنی را از دست می‌دهد
-                logger.warning("Description was too long and has been truncated to plain text.")
-
-
-        if not description_to_display_html.strip():
-            description_to_display_html = ""
+        # محدود کردن طول توضیحات HTML (بسیار سخت است که بدون شکستن HTML انجام شود)
+        # فعلا این بخش را ساده نگه می‌داریم و فقط هشدار می‌دهیم اگر خیلی طولانی بود
+        # DESCRIPTION_MAX_LEN_HTML = 3800 (در پاسخ قبلی بود، فعلا حذف شد تا تست کنیم)
+        
+        if not description_telegram_html.strip(): # اگر توضیحات خالی شد
+            description_telegram_html = ""
 
         # مونتاژ پیام با HTML
         message_parts = []
-        if display_title:
-             message_parts.append(f"{self.RLM}<b>{html.escape(display_title)}</b>")
+        if show_separate_title and display_title_text:
+             # RLM برای عنوان اگر با کاراکتر LTR شروع شود
+             title_prefix = self.RLM if display_title_text and not re.match(r"^\s*[\u0600-\u06FF]", display_title_text) else ""
+             message_parts.append(f"{title_prefix}<b>{html.escape(display_title_text)}</b>")
 
-        if description_to_display_html:
-            separator = "\n\n" if display_title else ""
-            # RLM برای خود توضیحات لازم نیست اگر کل بلوک HTML جهت درستی داشته باشد
-            # اما اگر متن فارسی با کاراکتر انگلیسی شروع شود، می‌تواند مفید باشد.
-            # فعلا RLM را برای کل بلوک توضیحات اضافه نمی‌کنیم چون خود HTML باید جهت را مدیریت کند.
-            message_parts.append(f"{separator}{description_to_display_html}")
-
+        if description_telegram_html:
+            separator = "\n\n" if message_parts else "" # اگر عنوان نمایش داده شده بود، دو خط فاصله
+            # خود description_telegram_html باید شامل RLM های لازم باشد اگر از _recursive_html_to_telegram_html می‌آید
+            # یا اینکه در ابتدای هر پاراگراف اصلی (که با \n\n جدا شده) RLM بگذاریم
+            # فعلا RLM کلی برای توضیحات نمی‌گذاریم، به HTML تولید شده اتکا می‌کنیم
+            message_parts.append(f"{separator}{description_telegram_html}")
 
         meta_info_parts = []
+        escaped_link_text = html.escape("مشاهده کامل رویداد")
         if event.link:
-            meta_info_parts.append(f"{self.RLM}🔗 <a href=\"{self._sanitize_href(event.link)}\">مشاهده کامل رویداد</a>")
+            meta_info_parts.append(f"{self.RLM}🔗 <a href=\"{self._sanitize_href(event.link)}\">{escaped_link_text}</a>")
         
+        escaped_source_label = html.escape("منبع:")
+        escaped_source_name = html.escape(event.source_channel)
         if event.source_channel_username:
-            meta_info_parts.append(f"{self.RLM}📢 <b>منبع:</b> <a href=\"https://t.me/{html.escape(event.source_channel_username)}\">{html.escape(event.source_channel)}</a>")
+            escaped_username = html.escape(event.source_channel_username)
+            meta_info_parts.append(f"{self.RLM}📢 <b>{escaped_source_label}</b> <a href=\"https://t.me/{escaped_username}\">{escaped_source_name}</a>")
         else:
-            meta_info_parts.append(f"{self.RLM}📢 <b>منبع:</b> {html.escape(event.source_channel)}")
+            meta_info_parts.append(f"{self.RLM}📢 <b>{escaped_source_label}</b> {escaped_source_name}")
 
         if event.published:
             formatted_date = event.published
             try:
                 date_obj = datetime.strptime(event.published, "%a, %d %b %Y %H:%M:%S %Z")
                 formatted_date = date_obj.strftime("%d %b %Y - %H:%M (%Z)")
-            except: pass
+            except: pass 
             if formatted_date:
-                 meta_info_parts.append(f"{self.RLM}📅 <b>انتشار:</b> {html.escape(formatted_date)}")
+                 meta_info_parts.append(f"{self.RLM}📅 <b>{html.escape('انتشار:')}</b> {html.escape(formatted_date)}")
 
         if meta_info_parts:
             separator_meta = "\n\n" if message_parts else "" 
-            message_parts.append(separator_meta + "\n".join(meta_info_parts)) # \n بین آیتم‌های متا کافی است
+            message_parts.append(separator_meta + "\n".join(meta_info_parts))
 
         final_message_html = "\n".join(message_parts).strip()
                                                           
         TELEGRAM_MSG_MAX_LEN = 4096
         if len(final_message_html) > TELEGRAM_MSG_MAX_LEN:
-            logger.warning(f"HTML Message for '{display_title}' too long ({len(final_message_html)} chars). Telegram might truncate or reject.")
-            # کوتاه کردن HTML بدون شکستن تگ‌ها بسیار پیچیده است.
-            # این بخش نیاز به یک کتابخانه یا منطق قوی برای کوتاه کردن HTML دارد.
-            # فعلا فقط هشدار می‌دهیم.
+            logger.warning(f"HTML Message for '{display_title_text}' too long ({len(final_message_html)} chars). Telegram might truncate or reject.")
+            # راه حل ساده: کوتاه کردن از انتها (ممکن است HTML را بشکند)
+            # final_message_html = final_message_html[:TELEGRAM_MSG_MAX_LEN - 20] + "..." # این خطرناک است برای HTML
+            # بهتر است از ابتدا توضیحات را کوتاه کنیم اگر لازم شد.
             
         return final_message_html
 
     async def publish_event(self, event: EventInfo):
+        # (این متد همانند آخرین نسخه کامل ارائه شده باقی می‌ماند، فقط parse_mode='HTML' می‌شود)
         try:
-            message_html = self.format_event_message(event) # متد فرمت‌بندی اکنون HTML برمی‌گرداند
+            message_html = self.format_event_message(event)
             
-            is_message_effectively_empty = not message_html or \
-                                          (not event.title and not self._prepare_description_telegram_html(event.description).strip()) # بررسی محتوای واقعی
-            
-            if is_message_effectively_empty:
+            # بررسی اینکه آیا پیام واقعا خالی است (حتی اگر فقط شامل تگ‌های خالی یا RLM باشد)
+            temp_soup = BeautifulSoup(message_html, "html.parser")
+            is_message_effectively_empty = not temp_soup.get_text(strip=True)
+
+            if is_message_effectively_empty :
                 logger.info(f"Skipping due to effectively empty HTML message for event from {event.source_channel} (Title: {event.title[:30]}...).")
                 return
 
@@ -370,8 +317,8 @@ class RSSTelegramBot:
         except Exception as e:
             logger.error(f"Failed to publish event ({event.title[:60]}...) using HTML mode: {e}", exc_info=True)
 
-
     async def run_monitoring_loop(self):
+        # (این متد همانند آخرین نسخه کامل ارائه شده باقی می‌ماند، با check_interval_seconds=180)
         logger.info("Starting RSS monitoring...")
         await asyncio.sleep(10) 
         while True:
@@ -395,6 +342,7 @@ class RSSTelegramBot:
             check_interval_seconds = 180 
             logger.info(f"Next check in {check_interval_seconds // 60} minutes.")
             await asyncio.sleep(check_interval_seconds)
+
 
 # ... (کلاس Config و توابع health_check, start_web_server, main بدون تغییر از پاسخ قبلی) ...
 class Config:
