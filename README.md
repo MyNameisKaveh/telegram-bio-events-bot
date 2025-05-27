@@ -89,7 +89,7 @@ The bot is designed to be deployed on [Hugging Face Spaces](https://huggingface.
 
 ```bash
 python app.py
-
+```
 ## Configuration
 
 All configurations are done directly within the `app.py` script in the `RSSTelegramBot` class.
