@@ -2,12 +2,12 @@ import asyncio
 import re
 import logging
 from datetime import datetime
-import html
+import html # برای unescape اولیه اگر لازم باشد
 import aiohttp
 import feedparser
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.helpers import escape_markdown
+from telegram.helpers import escape_markdown # برای MarkdownV2 escaping
 import os
 from dataclasses import dataclass
 from typing import List, Optional
@@ -20,15 +20,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EventInfo:
-    title: str # همچنان برای تشخیص رویداد لازم است
-    description: str
+    title: str # همچنان برای تشخیص رویداد و لاگ‌ها لازم است
+    description: str  # HTML خام از فید
     link: str
     published: str
     source_channel: str
     source_channel_username: Optional[str] = None
 
 class EventDetector:
-    # (کد EventDetector بدون تغییر از پاسخ قبلی)
     EVENT_KEYWORDS = [
         'وبینار', 'webinar', 'کارگاه', 'workshop', 'سمینار', 'seminar', 'کنفرانس', 'conference', 
         'همایش', 'congress', 'نشست', 'meeting', 'دوره آموزشی', 'course', 'کلاس', 'class', 
@@ -38,6 +37,7 @@ class EventDetector:
     ]
 
     def detect_event(self, title: str, description_html: str) -> bool:
+        # (منطق تشخیص رویداد از پاسخ قبلی، که به نظر شما خوب کار می‌کرد)
         soup = BeautifulSoup(description_html, "html.parser")
         first_p_tag = soup.find('p')
         if first_p_tag and first_p_tag.get_text(strip=True).lower().startswith("forwarded from"):
@@ -65,6 +65,7 @@ class EventDetector:
         title_has_keyword = any(keyword in title_lower for keyword in ['آموزش', 'فراخوان', 'لایو'])
         return title_has_keyword or has_specific_pattern or matches >= 2
 
+
 class RSSTelegramBot:
     def __init__(self, bot_token: str, target_channel: str):
         self.bot_token = bot_token
@@ -78,7 +79,7 @@ class RSSTelegramBot:
             {'name': 'SBU Bio Society', 'url': 'https://rsshub.app/telegram/channel/SBUBIOSOCIETY', 'channel': 'SBUBIOSOCIETY'},
             {'name': 'Test BioPy Channel', 'url': 'https://rsshub.app/telegram/channel/testbiopy', 'channel': 'testbiopy'}
         ]
-        self.RLM = "\u200F" # Right-to-Left Mark
+        self.RLM = "\u200F"
 
     async def fetch_feed(self, session: aiohttp.ClientSession, feed_info: dict) -> List[EventInfo]:
         # (این متد بدون تغییر از پاسخ قبلی)
@@ -95,12 +96,11 @@ class RSSTelegramBot:
                     for entry in feed.entries[:7]: 
                         entry_id = f"{feed_info.get('channel', feed_name)}_{entry.get('id', entry.get('link', ''))}"
                         if entry_id not in self.processed_items:
-                            raw_title = entry.get('title', '').strip() # عنوان همچنان خوانده می‌شود برای تشخیص رویداد
+                            raw_title = entry.get('title', '').strip()
                             raw_description_html = entry.get('description', entry.get('summary', ''))
                             if self.detector.detect_event(raw_title, raw_description_html):
                                 event = EventInfo(
-                                    title=raw_title, # ذخیره عنوان برای استفاده‌های احتمالی دیگر یا لاگ
-                                    description=raw_description_html,
+                                    title=raw_title, description=raw_description_html,
                                     link=entry.get('link', ''), published=entry.get('published', ''),
                                     source_channel=feed_name, source_channel_username=feed_info.get('channel')
                                 )
@@ -115,24 +115,22 @@ class RSSTelegramBot:
         return events
 
     def _escape_md_v2(self, text: Optional[str]) -> str:
-        if text is None:
-            return ""
+        if text is None: return ""
         return escape_markdown(str(text), version=2)
 
-    def _convert_node_to_markdown_v2_recursive(self, element, list_level=0) -> str:
-        # (این متد بدون تغییر از پاسخ قبلی)
+    def _convert_node_to_markdown_v2_recursive(self, element, list_level=0, inside_pre=False) -> str:
         if isinstance(element, NavigableString):
-            parent_name = element.parent.name if element.parent else None
-            if parent_name in ['pre', 'code']: return str(element) 
+            # متن‌ها باید escape شوند مگر اینکه داخل <pre> باشند
+            if inside_pre:
+                return str(element) # محتوای داخل <pre> نباید escape شود
             return self._escape_md_v2(str(element))
         
         tag_name = element.name
-        # پردازش فرزندان با list_level صحیح
-        current_list_level = list_level
-        if tag_name in ['ul', 'ol']:
-            current_list_level += 1
         
-        children_md_parts = [self._convert_node_to_markdown_v2_recursive(child, current_list_level) for child in element.children]
+        # تعیین اینکه آیا فرزندان این تگ هم باید در حالت inside_pre پردازش شوند
+        children_inside_pre = inside_pre or (tag_name == 'pre')
+
+        children_md_parts = [self._convert_node_to_markdown_v2_recursive(child, list_level + (1 if tag_name in ['ul', 'ol'] else 0), children_inside_pre) for child in element.children]
         children_md = "".join(children_md_parts)
 
         if tag_name in ['b', 'strong']: return f"*{children_md}*"
@@ -141,50 +139,51 @@ class RSSTelegramBot:
         if tag_name in ['s', 'strike', 'del']: return f"~{children_md}~"
         
         if tag_name == 'code':
-            if element.parent.name == 'pre': return children_md 
-            # برای کد inline، اگر children_md حاوی بک‌تیک بود، باید مدیریت شود.
-            # ساده‌ترین راه، اگر بک‌تیک داشت، از دو بک‌تیک استفاده کنیم، اما تلگرام این را پشتیبانی نمی‌کند.
-            # فعلا فرض می‌کنیم محتوای کد inline بک‌تیک ندارد یا کم است.
+            if element.parent.name == 'pre': # اگر code داخل pre بود
+                return children_md # خود pre فرمت ``` را می‌سازد، اینجا فقط محتوای خام
+            # برای کد inline، محتوا نباید شامل ` باشد یا باید مدیریت شود
+            # تلگرام از دو بک‌تیک برای escape کردن بک‌تیک داخل کد inline پشتیبانی نمی‌کند.
+            # پس اگر بک‌تیک داشت، نمایش آن در کد inline دشوار است. فعلا ساده نگه می‌داریم.
             return f"`{children_md}`" 
 
         if tag_name == 'pre':
             code_child = element.find('code', class_=lambda x: x and isinstance(x, list) and x[0].startswith('language-'))
+            # children_md در اینجا محتوای خام (escape نشده) داخل <pre> است
             if code_child:
                 lang = self._escape_md_v2(code_child['class'][0].split('-',1)[1])
-                # برای محتوای کد، از متن خام فرزندان code_child استفاده می‌کنیم تا escape نشود
-                code_content = "".join(str(c) for c in code_child.contents if isinstance(c, NavigableString))
-                return f"```{lang}\n{code_content.strip()}\n```"
-            # محتوای pre که کد نیست هم نباید escape شود
-            pre_content = "".join(str(c) if isinstance(c, NavigableString) else self._convert_node_to_markdown_v2_recursive(c, current_list_level) for c in element.children)
-            return f"```\n{pre_content.strip()}\n```"
+                # محتوای کد را از خود code_child بگیریم چون children_md شامل تگ <code> هم هست
+                # و باید متن خام داخل <code> را داشته باشیم
+                pre_content = "".join(self._convert_node_to_markdown_v2_recursive(c, 0, True) for c in code_child.children)
+                return f"```{lang}\n{pre_content.strip()}\n```"
+            return f"```\n{children_md.strip()}\n```"
 
         if tag_name == 'a':
             href = element.get('href', '')
             if href and href.strip().lower().startswith(('http', 'tg://')):
-                safe_href = href.strip().replace('(', '%28').replace(')', '%29') # پرانتزها را در URL escape کن
+                safe_href = href.strip().replace('(', '%28').replace(')', '%29')
                 # children_md (متن لینک) از قبل escape شده است
                 return f"[{children_md}]({safe_href})"
             return children_md 
 
         if tag_name == 'br': return '\n'
         
-        # تگ‌های بلاک که نیاز به \n\n بعدشان دارند (اگر خودشان با \n تمام نشده باشند)
-        if tag_name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table']:
-            processed_content = children_md.rstrip('\n') # \n های انتهایی را حذف کن
-            return f"{processed_content}\n\n"
+        # تگ‌های بلاک که نیاز به خط جدید قبل و بعد دارند
+        if tag_name in ['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'hr', 'table', 'figure']:
+            # اگر children_md با \n تمام نشده، دو تا اضافه کن. اگر با یک \n تمام شده، یکی دیگر اضافه کن.
+            processed_content = children_md.strip('\n') # \n های اضافی از انتهای محتوای داخلی حذف شوند
+            if processed_content: # فقط اگر محتوا داشت
+                return f"{processed_content}\n\n"
+            return "\n\n" # اگر بلاک خالی بود هم یک فاصله پاراگراف ایجاد کند (یا می‌توان این را حذف کرد)
         
-        if tag_name == 'ul': # فقط فرزندان li را با خط جدید برگردان
-            return children_md # هر li خودش با \n تمام می‌شود
-        if tag_name == 'ol': # شماره‌گذاری برای ol پیچیده‌تر است، فعلا شبیه ul
-             return children_md
+        if tag_name == 'ul': return children_md 
+        if tag_name == 'ol': return children_md # شماره‌گذاری اتوماتیک Markdown برای ol پیچیده است، فعلا شبیه ul
 
         if tag_name == 'li':
-            # از list_level برای تورفتگی استفاده نمی‌کنیم چون Markdown تلگرام خیلی ساده است
-            prefix = f"{self.RLM}• " # برای همه لیست‌ها از بالت استفاده می‌کنیم
+            prefix = f"{self.RLM}• " 
+            # اطمینان از اینکه با \n تمام می‌شود و فضاهای خالی اضافی ندارد
             return f"{prefix}{children_md.strip()}\n"
 
-        return children_md
-
+        return children_md # برای تگ‌های ناشناخته، فقط محتوای فرزندان
 
     def _prepare_description_for_markdown_v2(self, html_content: str) -> str:
         if not html_content: return ""
@@ -197,28 +196,38 @@ class RSSTelegramBot:
         markdown_text = self._convert_node_to_markdown_v2_recursive(soup.body if soup.body else soup)
         
         # نرمال‌سازی نهایی خطوط جدید
-        # حذف فضاهای خالی در ابتدا و انتهای هر خط و سپس اتصال خطوط غیرخالی
-        lines = [line.strip() for line in markdown_text.splitlines()]
-        markdown_text = "\n".join(line for line in lines if line) # حذف خطوط کاملا خالی
+        markdown_text = markdown_text.replace('\r\n', '\n').replace('\r', '\n')
+        markdown_text = re.sub(r'\n{3,}', '\n\n', markdown_text) # بیش از دو \n متوالی به دو \n
+        markdown_text = markdown_text.strip() # حذف فضاهای خالی و \n از ابتدا و انتهای کل متن
+        
+        # برای اطمینان از اینکه خطوطی که فقط شامل RLM هستند حذف شوند
+        lines = markdown_text.splitlines()
+        cleaned_lines = []
+        for line in lines:
+            stripped_line = line.strip()
+            if stripped_line and stripped_line != self.RLM:
+                cleaned_lines.append(stripped_line)
+            elif not stripped_line and cleaned_lines and cleaned_lines[-1]: # برای حفظ یک خط خالی بین پاراگراف‌ها
+                 cleaned_lines.append("")
 
-        # تبدیل سه یا بیشتر \n به دو \n (برای جلوگیری از فاصله زیاد بین پاراگراف‌ها)
-        markdown_text = re.sub(r'\n{3,}', '\n\n', markdown_text).strip()
-        return markdown_text
+
+        final_text = "\n".join(cleaned_lines)
+        # ممکن است هنوز \n\n در انتهای متن باشد اگر آخرین بلاک \n\n اضافه کرده باشد
+        return final_text.strip()
+
 
     def format_event_message(self, event: EventInfo) -> str:
-        # دیگر عنوان جداگانه‌ای نمایش داده نمی‌شود طبق درخواست کاربر
-        # کل محتوا از event.description می‌آید
-        
         description_md = self._prepare_description_for_markdown_v2(event.description)
         
-        # اگر توضیحات (که حالا شامل عنوان هم هست) خالی بود، چیزی ارسال نکن
-        if not description_md.strip():
+        if not description_md.strip(): # اگر توضیحات (که حالا شامل عنوان هم هست) خالی بود
             logger.info(f"MarkdownV2 description is empty for event (Original title: {event.title[:30]}...). Skipping.")
             return ""
 
-        message_parts = [f"{self.RLM}{description_md}"] # RLM در ابتدای کل متن توضیحات
+        # RLM در ابتدای کل پیام اگر با کاراکتر LTR شروع شود
+        # خود description_md باید شامل RLM های لازم برای خطوط داخلی باشد (مثلا برای آیتم های لیست)
+        message_prefix = self.RLM if description_md and not re.match(r"^\s*[\u0600-\u06FF*_[~`#]", description_md) else ""
+        message_parts = [f"{message_prefix}{description_md}"]
 
-        # --- بخش اطلاعات متا ---
         meta_info_parts = []
         if event.link:
             escaped_link_text = self._escape_md_v2("مشاهده کامل رویداد")
@@ -227,7 +236,7 @@ class RSSTelegramBot:
         
         source_text_escaped = self._escape_md_v2(event.source_channel)
         if event.source_channel_username:
-            tg_url = f"https://t.me/{event.source_channel_username}" # یوزرنیم برای URL نباید escape شود
+            tg_url = f"[https://t.me/](https://t.me/){event.source_channel_username}"
             meta_info_parts.append(f"{self.RLM}📢 *{self._escape_md_v2('منبع:')}* [{source_text_escaped}]({tg_url})")
         else:
             meta_info_parts.append(f"{self.RLM}📢 *{self._escape_md_v2('منبع:')}* {source_text_escaped}")
@@ -242,22 +251,19 @@ class RSSTelegramBot:
                  meta_info_parts.append(f"{self.RLM}📅 *{self._escape_md_v2('انتشار:')}* {self._escape_md_v2(formatted_date_unescaped)}")
 
         if meta_info_parts:
-            # همیشه دو خط جدید قبل از بخش متا، چون دیگر عنوان جداگانه‌ای نداریم
-            message_parts.append("\n\n" + "\n".join(meta_info_parts))
+            message_parts.append("\n\n" + "\n".join(meta_info_parts)) # همیشه دو خط جدید قبل از بخش متا
 
         final_message_md = "\n".join(message_parts).strip()
                                                           
-        if len(final_message_md) > 4096: # محدودیت طول تلگرام
+        if len(final_message_md) > 4096:
              logger.warning(f"MarkdownV2 Message (Original title: '{event.title[:30]}') too long ({len(final_message_md)} chars).")
-             # در اینجا باید استراتژی بهتری برای کوتاه کردن Markdown پیاده‌سازی شود.
         return final_message_md
 
     async def publish_event(self, event: EventInfo):
         # (این متد بدون تغییر از پاسخ قبلی)
         try:
             message_md = self.format_event_message(event)
-            
-            if not message_md: # اگر format_event_message رشته خالی برگرداند
+            if not message_md:
                 logger.info(f"Skipping due to formatted message being empty for event from {event.source_channel} (Original Title: {event.title[:30]}...).")
                 return
 
