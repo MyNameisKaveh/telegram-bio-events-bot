@@ -95,11 +95,28 @@ class RSSTelegramBot:
         
         # List of RSS feeds to monitor
         self.rss_feeds = [
-            {'name': 'WinCell Co', 'url': 'https://rsshub.app/telegram/channel/wincellco', 'channel': 'wincellco'},
+            {'name': 'GENETIXgroup', 'url': 'https://rsshub.app/telegram/channel/GENETIXgroup', 'channel': 'GENETIXgroup'},
+            {'name': 'IDS_Med', 'url': 'https://rsshub.app/telegram/channel/IDS_Med', 'channel': 'IDS_Med'},
+            {'name': 'IranianBioinformaticsSociety', 'url': 'https://rsshub.app/telegram/channel/IranianBioinformaticsSociety', 'channel': 'IranianBioinformaticsSociety'},
+            {'name': 'KHU_nanobiotech', 'url': 'https://rsshub.app/telegram/channel/KHU_nanobiotech', 'channel': 'KHU_nanobiotech'},
+            {'name': 'Khubioinformatics', 'url': 'https://rsshub.app/telegram/channel/Khubioinformatics', 'channel': 'Khubioinformatics'},
+            {'name': 'NationalBrainMappingLab', 'url': 'https://rsshub.app/telegram/channel/NationalBrainMappingLab', 'channel': 'NationalBrainMappingLab'},
             {'name': 'Rayazistazma', 'url': 'https://rsshub.app/telegram/channel/Rayazistazma', 'channel': 'Rayazistazma'},
-            {'name': 'SBU Bio Society', 'url': 'https://rsshub.app/telegram/channel/SBUBIOSOCIETY', 'channel': 'SBUBIOSOCIETY'},
-            {'name': 'Test BioPy Channel', 'url': 'https://rsshub.app/telegram/channel/testbiopy', 'channel': 'testbiopy'}
-            # To add more channels, append new dictionaries with 'name', 'url', and 'channel' keys here
+            {'name': 'SBUBIOSOCIETY', 'url': 'https://rsshub.app/telegram/channel/SBUBIOSOCIETY', 'channel': 'SBUBIOSOCIETY'},
+            {'name': 'SystemsBioML', 'url': 'https://rsshub.app/telegram/channel/SystemsBioML', 'channel': 'SystemsBioML'},
+            {'name': 'UTBiologyAssociation', 'url': 'https://rsshub.app/telegram/channel/UTBiologyAssociation', 'channel': 'UTBiologyAssociation'},
+            {'name': 'amagene', 'url': 'https://rsshub.app/telegram/channel/amagene', 'channel': 'amagene'},
+            {'name': 'aubiotechnology', 'url': 'https://rsshub.app/telegram/channel/aubiotechnology', 'channel': 'aubiotechnology'},
+            {'name': 'biodc', 'url': 'https://rsshub.app/telegram/channel/biodc', 'channel': 'biodc'},
+            {'name': 'biophileTeam', 'url': 'https://rsshub.app/telegram/channel/biophileTeam', 'channel': 'biophileTeam'},
+            {'name': 'biotechku', 'url': 'https://rsshub.app/telegram/channel/biotechku', 'channel': 'biotechku'},
+            {'name': 'cellandmolecularbiology', 'url': 'https://rsshub.app/telegram/channel/cellandmolecularbiology', 'channel': 'cellandmolecularbiology'},
+            {'name': 'ipmbio', 'url': 'https://rsshub.app/telegram/channel/ipmbio', 'channel': 'ipmbio'},
+            {'name': 'ir_micro_academy', 'url': 'https://rsshub.app/telegram/channel/ir_micro_academy', 'channel': 'ir_micro_academy'},
+            {'name': 'utBioEvent', 'url': 'https://rsshub.app/telegram/channel/utBioEvent', 'channel': 'utBioEvent'},
+            {'name': 'wincellco', 'url': 'https://rsshub.app/telegram/channel/wincellco', 'channel': 'wincellco'},
+            {'name': 'yazd_bioinformatics_association', 'url': 'https://rsshub.app/telegram/channel/yazd_bioinformatics_association', 'channel': 'yazd_bioinformatics_association'},
+            {'name': 'zistotech', 'url': 'https://rsshub.app/telegram/channel/zistotech', 'channel': 'zistotech'},
         ]
         self.RLM = "\u200F" # Right-to-Left Mark for RTL text handling
         # Characters that must be escaped in MarkdownV2 according to Telegram documentation
