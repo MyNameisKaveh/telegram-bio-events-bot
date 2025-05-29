@@ -94,7 +94,7 @@ class RSSTelegramBot:
     """Main class for the RSS Telegram Bot."""
     SIMILARITY_THRESHOLD = 0.75
     DUPLICATE_TITLE_WINDOW_SECONDS = 48 * 60 * 60  # 48 hours
-    DB_PATH = "/app/bot_data.db"
+    DB_PATH = "/data/bot_data.db"
 
     def __init__(self, bot_token: str, target_channel: str):
         self.bot_token = bot_token
