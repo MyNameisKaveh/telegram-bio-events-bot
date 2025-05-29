@@ -6,6 +6,8 @@ import html # For unescaping HTML entities if necessary, and escaping for HTML p
 from collections import deque
 import difflib
 import time
+import sqlite3
+import os
 import aiohttp
 import feedparser
 from telegram import Bot
@@ -92,14 +94,21 @@ class RSSTelegramBot:
     """Main class for the RSS Telegram Bot."""
     SIMILARITY_THRESHOLD = 0.75
     DUPLICATE_TITLE_WINDOW_SECONDS = 48 * 60 * 60  # 48 hours
+    DB_PATH = "bot_data.db"
 
     def __init__(self, bot_token: str, target_channel: str):
         self.bot_token = bot_token
         self.target_channel = target_channel
         self.bot = Bot(token=bot_token)
         self.detector = EventDetector()
-        self.processed_items = set() # Stores IDs of processed items to avoid duplicates (in-memory)
+        
+        is_new_db = self._init_db()
+        self.initial_priming_needed = is_new_db
+        self.processed_items = set() # Stores entry_ids of processed items
+        self._load_processed_items_from_db()
+
         self.recently_posted_event_signatures = deque(maxlen=100) # Stores (normalized_title, timestamp)
+        self._load_recent_titles_from_db()
         
         # List of RSS feeds to monitor
         self.rss_feeds = [
@@ -130,6 +139,102 @@ class RSSTelegramBot:
         # Characters that must be escaped in MarkdownV2 according to Telegram documentation
         self.MDV2_ESCAPE_CHARS = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
 
+    def _init_db(self) -> bool:
+        """Initializes the SQLite database and creates tables if they don't exist.
+        Returns True if the database file was newly created, False otherwise."""
+        db_existed = os.path.exists(self.DB_PATH)
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_posts (
+                    entry_id TEXT PRIMARY KEY,
+                    timestamp REAL
+                )
+            """)
+            # Table for recently_posted_event_signatures
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS recent_titles (
+                    normalized_title TEXT,
+                    timestamp REAL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_recent_titles_timestamp ON recent_titles (timestamp);
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+        return not db_existed
+
+    def _load_processed_items_from_db(self):
+        """Loads processed entry_ids from the database into the in-memory set."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT entry_id FROM processed_posts")
+            for row in cursor.fetchall():
+                self.processed_items.add(row[0])
+            logger.info(f"Loaded {len(self.processed_items)} processed entry IDs from database.")
+        finally:
+            conn.close()
+
+    def _add_processed_entry_to_db(self, entry_id: str):
+        """Adds a processed entry_id and current timestamp to the database."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO processed_posts (entry_id, timestamp) VALUES (?, ?)",
+                           (entry_id, time.time()))
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Database error while adding entry {entry_id}: {e}")
+        finally:
+            conn.close()
+
+    def _load_recent_titles_from_db(self):
+        """Loads recent titles from DB into the self.recently_posted_event_signatures deque."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            # Load items, ordering by timestamp ensures deque processes them chronologically
+            # The deque's maxlen will handle truncation if more than maxlen items are loaded.
+            cursor.execute("SELECT normalized_title, timestamp FROM recent_titles ORDER BY timestamp ASC")
+            for row in cursor.fetchall():
+                self.recently_posted_event_signatures.append((row[0], row[1]))
+            logger.info(f"Loaded {len(self.recently_posted_event_signatures)} recent title signatures from database.")
+        except sqlite3.Error as e:
+            logger.error(f"Database error while loading recent titles: {e}")
+        finally:
+            conn.close()
+
+    def _add_recent_title_to_db(self, normalized_title: str, timestamp: float):
+        """Adds a recent title and timestamp to the database."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO recent_titles (normalized_title, timestamp) VALUES (?, ?)",
+                           (normalized_title, timestamp))
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Database error while adding recent title {normalized_title}: {e}")
+        finally:
+            conn.close()
+            
+    def _remove_recent_title_from_db(self, normalized_title: str, timestamp: float):
+        """Removes a specific title-timestamp pair from the recent_titles table."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            # Using both title and timestamp to ensure we remove the exact entry
+            cursor.execute("DELETE FROM recent_titles WHERE normalized_title = ? AND timestamp = ?",
+                           (normalized_title, timestamp))
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Database error while removing recent title {normalized_title}: {e}")
+        finally:
+            conn.close()
+
     def is_title_duplicate(self, new_normalized_title: str, current_timestamp: float) -> bool:
         # First, prune old entries from the deque to avoid comparing with very old titles
         # and to respect the DUPLICATE_TITLE_WINDOW_SECONDS logic more strictly 
@@ -139,6 +244,7 @@ class RSSTelegramBot:
             old_title, old_timestamp = self.recently_posted_event_signatures[0] # Oldest item
             if current_timestamp - old_timestamp > self.DUPLICATE_TITLE_WINDOW_SECONDS:
                 self.recently_posted_event_signatures.popleft()
+                self._remove_recent_title_from_db(old_title, old_timestamp) # Remove from DB
             else:
                 break # Stop if the oldest is within the window
 
@@ -166,29 +272,37 @@ class RSSTelegramBot:
                     feed = feedparser.parse(content)
                     logger.info(f"Fetched {feed_name}. Entries: {len(feed.entries)}. LastBuildDate: {feed.feed.get('updated', feed.feed.get('published', 'N/A'))}")
                     
-                    # Process a limited number of recent entries (e.g., last 7)
-                    for entry in feed.entries[:7]: 
-                        # Create a unique ID for each entry to track processed items
+                    for entry in feed.entries[:7]: # Process a limited number of recent entries
                         entry_id = f"{feed_info.get('channel', feed_name)}_{entry.get('id', entry.get('link', ''))}"
-                        if entry_id not in self.processed_items:
-                            raw_title = entry.get('title', '').strip()
-                            raw_description_html = entry.get('description', entry.get('summary', ''))
-                            
-                            if self.detector.detect_event(raw_title, raw_description_html):
-                                event = EventInfo(
-                                    title=raw_title, # Store original title for logging/detection
-                                    description=raw_description_html, # Store raw HTML for later conversion
-                                    link=entry.get('link', ''), 
-                                    published=entry.get('published', ''),
-                                    source_channel=feed_name, 
-                                    source_channel_username=feed_info.get('channel')
-                                )
-                                event.normalized_title = event.title.lower().strip() # Populate normalized_title
-                                events.append(event)
+
+                        if self.initial_priming_needed:
+                            if entry_id not in self.processed_items:
                                 self.processed_items.add(entry_id)
+                                self._add_processed_entry_to_db(entry_id)
+                                logger.debug(f"Priming: Added entry {entry_id} to processed items DB.")
+                            # Do NOT create EventInfo or add to events list during priming
+                        else: # Normal operation
+                            if entry_id not in self.processed_items:
+                                raw_title = entry.get('title', '').strip()
+                                raw_description_html = entry.get('description', entry.get('summary', ''))
+                                
+                                if self.detector.detect_event(raw_title, raw_description_html):
+                                    event = EventInfo(
+                                        title=raw_title,
+                                        description=raw_description_html,
+                                        link=entry.get('link', ''),
+                                        published=entry.get('published', ''),
+                                        source_channel=feed_name,
+                                        source_channel_username=feed_info.get('channel')
+                                    )
+                                    event.normalized_title = event.title.lower().strip()
+                                    events.append(event)
+                                    self.processed_items.add(entry_id)
+                                    self._add_processed_entry_to_db(entry_id)
+                                    # No need to log here as it's normal operation, publish_event will log success/failure
                         
-                        # Memory management for processed_items set
-                        if len(self.processed_items) > 1500: # If set grows too large
+                        # Memory management for in-memory processed_items set (still useful for very long runs between restarts)
+                        if len(self.processed_items) > 1500: # If set grows too large (e.g. > 1000 more than DB items if many are non-events)
                             # Convert to list, take a slice of more recent items, convert back to set
                             self.processed_items = set(list(self.processed_items)[500:]) 
                             logger.info(f"Cleaned up processed_items. New size: {len(self.processed_items)}")
@@ -399,6 +513,7 @@ class RSSTelegramBot:
             # Add to recently posted only after successful send
             if event.normalized_title: # Double check, though it should be populated
                 self.recently_posted_event_signatures.append((event.normalized_title, current_time))
+                self._add_recent_title_to_db(event.normalized_title, current_time) # Add to DB
         except Exception as e:
             logger.error(f"Failed to publish event ({event.title[:60]}...) using MarkdownV2 mode: {e}", exc_info=True)
 
@@ -419,9 +534,15 @@ class RSSTelegramBot:
                         all_new_events.extend(result)
                     elif isinstance(result, Exception): 
                         logger.error(f"Feed processing task resulted in an exception: {result}", exc_info=result)
+
+            if self.initial_priming_needed:
+                self.initial_priming_needed = False # Priming is done after the first full fetch cycle
+                logger.info("Initial feed priming complete. Bot will now publish new events from the next cycle onwards.")
+                # Clear all_new_events if any were accidentally added during priming (shouldn't happen with current logic)
+                all_new_events.clear() 
             
             if all_new_events:
-                logger.info(f"Found {len(all_new_events)} new event(s) to publish.")
+                logger.info(f"Found {len(all_new_events)} new detected event(s) to publish.")
                 # You could sort events here if needed, e.g., by publication date
                 # all_new_events.sort(key=lambda ev: ev.published_timestamp_or_default)
                 for event_to_publish in all_new_events:
