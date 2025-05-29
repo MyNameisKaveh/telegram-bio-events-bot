@@ -140,32 +140,79 @@ class RSSTelegramBot:
         self.MDV2_ESCAPE_CHARS = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
 
     def _init_db(self) -> bool:
-        """Initializes the SQLite database and creates tables if they don't exist.
-        Returns True if the database file was newly created, False otherwise."""
-        db_existed = os.path.exists(self.DB_PATH)
-        conn = sqlite3.connect(self.DB_PATH)
+        # Diagnostic logging
+        db_dir = os.path.dirname(self.DB_PATH)
+        logger.info(f"Attempting to initialize database at: {self.DB_PATH}")
+        logger.info(f"Database directory is: {db_dir}")
+
+        if not os.path.exists(db_dir):
+            logger.error(f"Database directory does NOT exist: {db_dir}")
+            # Optionally, try to create it if it makes sense for the environment
+            try:
+                logger.info(f"Attempting to create directory: {db_dir}")
+                os.makedirs(db_dir, exist_ok=True) # exist_ok=True means no error if dir already exists
+                if os.path.exists(db_dir):
+                    logger.info(f"Successfully created directory (or it already existed): {db_dir}")
+                else:
+                    logger.error(f"Failed to create directory: {db_dir}")
+                    # Depending on strictness, might raise an error or return False here
+            except Exception as e:
+                logger.error(f"Exception while trying to create directory {db_dir}: {e}")
+                # Depending on strictness, might raise an error or return False here
+        else:
+            logger.info(f"Database directory already exists: {db_dir}")
+
+        if os.path.exists(db_dir): # Check again after creation attempt
+            logger.info(f"Directory {db_dir} exists. Checking writability...")
+            if os.access(db_dir, os.W_OK):
+                logger.info(f"Directory {db_dir} is writable.")
+                # Try creating a temporary test file
+                test_file_path = os.path.join(db_dir, "temp_write_test.txt")
+                try:
+                    with open(test_file_path, "w") as f:
+                        f.write("test")
+                    logger.info(f"Successfully created and wrote to test file: {test_file_path}")
+                    os.remove(test_file_path)
+                    logger.info(f"Successfully removed test file: {test_file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to create/write/delete test file in {db_dir}: {e}")
+            else:
+                logger.error(f"Directory {db_dir} is NOT writable.")
+        else:
+            logger.error(f"Database directory {db_dir} still does not exist after creation attempt.")
+
+
+        # Original logic for DB connection and table creation
+        is_newly_created_db_file = not os.path.exists(self.DB_PATH)
+        conn = None # Initialize conn
         try:
+            conn = sqlite3.connect(self.DB_PATH)
             cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS processed_posts (
-                    entry_id TEXT PRIMARY KEY,
-                    timestamp REAL
-                )
-            """)
-            # Table for recently_posted_event_signatures
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS recent_titles (
-                    normalized_title TEXT,
-                    timestamp REAL
-                )
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_recent_titles_timestamp ON recent_titles (timestamp);
-            """)
+            cursor.execute("CREATE TABLE IF NOT EXISTS processed_posts (entry_id TEXT PRIMARY KEY, timestamp REAL)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS recent_titles (normalized_title TEXT, timestamp REAL)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_recent_titles_timestamp ON recent_titles (timestamp)")
             conn.commit()
+            logger.info(f"Successfully connected to SQLite DB and ensured tables/index exist: {self.DB_PATH}")
+            if is_newly_created_db_file:
+                logger.info(f"Database file was newly created: {self.DB_PATH}")
+                # Check if the table is truly empty as another indicator of a 'new' setup for priming
+                cursor.execute("SELECT COUNT(*) FROM processed_posts")
+                count = cursor.fetchone()[0]
+                if count == 0:
+                    logger.info("processed_posts table is empty, confirming new DB setup for priming.")
+                    return True # Indicates a fresh setup for priming
+                else:
+                    logger.info(f"processed_posts table is not empty (count: {count}), not a new DB setup for priming.")
+                    return False
+            else:
+                logger.info(f"Database file already existed: {self.DB_PATH}")
+                return False # Not a new DB file
+        except sqlite3.Error as e:
+            logger.error(f"SQLite error during connect/setup for {self.DB_PATH}: {e}", exc_info=True)
+            raise # Re-raise the exception to see the original traceback if connect fails
         finally:
-            conn.close()
-        return not db_existed
+            if conn:
+                conn.close()
 
     def _load_processed_items_from_db(self):
         """Loads processed entry_ids from the database into the in-memory set."""
