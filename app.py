@@ -3,6 +3,9 @@ import re
 import logging
 from datetime import datetime
 import html # For unescaping HTML entities if necessary, and escaping for HTML parse mode
+from collections import deque
+import difflib
+import time
 import aiohttp
 import feedparser
 from telegram import Bot
@@ -27,6 +30,7 @@ class EventInfo:
     published: str      # Publication date string
     source_channel: str # Display name of the source channel
     source_channel_username: Optional[str] = None # Telegram username of the source channel (for linking)
+    normalized_title: Optional[str] = None # For de-duplication based on title
 
 class EventDetector:
     """Class to detect if an RSS entry likely contains event information."""
@@ -86,12 +90,16 @@ class EventDetector:
 
 class RSSTelegramBot:
     """Main class for the RSS Telegram Bot."""
+    SIMILARITY_THRESHOLD = 0.75
+    DUPLICATE_TITLE_WINDOW_SECONDS = 48 * 60 * 60  # 48 hours
+
     def __init__(self, bot_token: str, target_channel: str):
         self.bot_token = bot_token
         self.target_channel = target_channel
         self.bot = Bot(token=bot_token)
         self.detector = EventDetector()
         self.processed_items = set() # Stores IDs of processed items to avoid duplicates (in-memory)
+        self.recently_posted_event_signatures = deque(maxlen=100) # Stores (normalized_title, timestamp)
         
         # List of RSS feeds to monitor
         self.rss_feeds = [
@@ -121,6 +129,28 @@ class RSSTelegramBot:
         self.RLM = "\u200F" # Right-to-Left Mark for RTL text handling
         # Characters that must be escaped in MarkdownV2 according to Telegram documentation
         self.MDV2_ESCAPE_CHARS = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+
+    def is_title_duplicate(self, new_normalized_title: str, current_timestamp: float) -> bool:
+        # First, prune old entries from the deque to avoid comparing with very old titles
+        # and to respect the DUPLICATE_TITLE_WINDOW_SECONDS logic more strictly 
+        # if deque's maxlen is very large or events are infrequent.
+        # Note: deque.maxlen handles size, this handles time window.
+        while self.recently_posted_event_signatures:
+            old_title, old_timestamp = self.recently_posted_event_signatures[0] # Oldest item
+            if current_timestamp - old_timestamp > self.DUPLICATE_TITLE_WINDOW_SECONDS:
+                self.recently_posted_event_signatures.popleft()
+            else:
+                break # Stop if the oldest is within the window
+
+        if not new_normalized_title: # Should not happen if populated correctly
+            return False
+
+        for existing_title, _ in self.recently_posted_event_signatures:
+            similarity = difflib.SequenceMatcher(None, new_normalized_title, existing_title).ratio()
+            if similarity >= self.SIMILARITY_THRESHOLD:
+                logger.info(f"Potential duplicate title: '{new_normalized_title}' is {similarity*100:.2f}% similar to '{existing_title}'.")
+                return True
+        return False
 
     async def fetch_feed(self, session: aiohttp.ClientSession, feed_info: dict) -> List[EventInfo]:
         """Fetches and parses a single RSS feed, returning a list of detected EventInfo objects."""
@@ -153,6 +183,7 @@ class RSSTelegramBot:
                                     source_channel=feed_name, 
                                     source_channel_username=feed_info.get('channel')
                                 )
+                                event.normalized_title = event.title.lower().strip() # Populate normalized_title
                                 events.append(event)
                                 self.processed_items.add(entry_id)
                         
@@ -343,6 +374,15 @@ class RSSTelegramBot:
     async def publish_event(self, event: EventInfo):
         """Publishes a single event to the Telegram channel."""
         try:
+            if not event.normalized_title: # Should have been populated in fetch_feed
+                logger.warning(f"Event '{event.title[:60]}...' has no normalized_title. Skipping duplicate check and publish.")
+                return
+
+            current_time = time.time()
+            if self.is_title_duplicate(event.normalized_title, current_time):
+                logger.info(f"Skipping publish for likely duplicate event (title-based): {event.title[:60]}...")
+                return
+
             message_md = self.format_event_message(event)
             
             if not message_md: # If formatted message is empty (e.g., description was empty)
@@ -356,6 +396,9 @@ class RSSTelegramBot:
                 disable_web_page_preview=True # Set to False if you want link previews for the main event link
             )
             logger.info(f"Published event (MarkdownV2): {event.title[:60]}... from {event.source_channel}")
+            # Add to recently posted only after successful send
+            if event.normalized_title: # Double check, though it should be populated
+                self.recently_posted_event_signatures.append((event.normalized_title, current_time))
         except Exception as e:
             logger.error(f"Failed to publish event ({event.title[:60]}...) using MarkdownV2 mode: {e}", exc_info=True)
 
